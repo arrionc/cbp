@@ -1,0 +1,54 @@
+import os, re, fitz, pandas as pd
+
+PDF_DIR = "/mnt/data"                       # ← change if your PDFs live elsewhere
+PDFS    = [f for f in os.listdir(PDF_DIR) if f.startswith("DST") and f.endswith(".pdf")]
+
+# 1️⃣  Entry row pattern – tolerant of new-lines
+entry_rx = re.compile(
+    r"""(?P<duty>\d{1,3}(?:,\d{3})*\.\d{2})\s+        # Estimated Duty
+        0\.00\s+0\.00\s+0\.00\s+                      # three literal 0.00 columns
+        (?P<fees>\d{1,3}(?:,\d{3})*\.\d{2})\s+        # User Fees / Interest
+        (?P<total>\d{1,3}(?:,\d{3})*\.\d{2})\s+       # Total Amount
+        (?P<entry>\d{3}[-–]\d+[-–]\d)\s+              # Entry number (dash or en-dash)
+        (?P<ref>\d+)\s+                               # Ref number
+        (?P<tp>\d{2}\s+\w+)                           # TP code (“03 BCA”)
+    """,
+    re.MULTILINE | re.VERBOSE,
+)
+
+date_rx  = re.compile(r"Process Date:\s*([0-9/]+)")
+
+def money(txt: str) -> float:
+    """'7,124.50' → 7124.50   '181.25' → 181.25"""
+    return float(txt.replace(",", ""))
+
+rows = []
+
+for pdf in PDFS:
+    path  = os.path.join(PDF_DIR, pdf)
+    with fitz.open(path) as doc:
+        text = "\n".join(p.get_text() for p in doc)
+
+    # Extract Process Date once per file
+    md = date_rx.search(text)
+    proc_date = md.group(1) if md else ""
+
+    # Find every entry block (some PDFs have 2+ entries)
+    for m in entry_rx.finditer(text):
+        rows.append({
+            "Statement"          : pdf[:-4],                 # file name minus .pdf
+            "Process Date"       : proc_date,
+            "Entry Number"       : m["entry"],
+            "Ref Number"         : m["ref"],
+            "TP"                 : m["tp"].replace("\n", " "),
+            "Estimated Duty"     : money(m["duty"]),
+            "User Fees/Interest" : money(m["fees"]),
+            "Total Amount"       : money(m["total"]),
+        })
+
+# → DataFrame + Excel
+df = pd.DataFrame(rows)
+print(df)                              # sanity-check in the console
+outfile = os.path.join(PDF_DIR, "dst_statements.xlsx")
+df.to_excel(outfile, index=False)
+print(f"\n✓ {len(df)} rows written to {outfile}")
