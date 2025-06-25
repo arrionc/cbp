@@ -1,0 +1,67 @@
+import os, re, fitz, pandas as pd
+
+PDF_DIR = "/mnt/data"                       # change if needed
+PDFS     = [f for f in os.listdir(PDF_DIR) if f.startswith("DST") and f.endswith(".pdf")]
+
+records  = []
+
+# entry number can have ASCII dash [-] or en-dash [–]
+ENTRY_RE = re.compile(r"\d{3}[-–]\d+[-–]\d")
+
+DATE_RE  = re.compile(r"Process Date:\s*([0-9/]+)")
+
+def money(txt):
+    """ '7,124.50' → 7124.50 ; '335.85' → 335.85 """
+    return float(txt.replace(",", ""))
+
+for pdf in PDFS:
+    path = os.path.join(PDF_DIR, pdf)
+    with fitz.open(path) as doc:
+        text = "\n".join(p.get_text() for p in doc)
+
+    # ---- process date (once per file) ----
+    m_date     = DATE_RE.search(text)
+    proc_date  = m_date.group(1) if m_date else ""
+
+    # ---- walk each line looking for an entry number ----
+    for line in text.splitlines():
+        if not ENTRY_RE.search(line):
+            continue
+
+        # normalise whitespace and split
+        tokens = re.sub(r"\s+", " ", line).strip().split(" ")
+
+        # quick sanity check – expecting at least 9 columns
+        if len(tokens) < 9:
+            continue
+
+        # capture the things we care about
+        duty      = money(tokens[0])
+        user_fees = money(tokens[4])
+        total_amt = money(tokens[5])
+        entry_no  = tokens[6]
+        ref_no    = tokens[7]
+        tp_code   = " ".join(tokens[8:])         # handles '03 BCA' etc.
+
+        # DEBUG: print exactly what we captured (once per entry)
+        print(f"[{pdf}] -->", tokens)
+
+        records.append({
+            "Statement"          : pdf[:-4],     # filename minus '.pdf'
+            "Process Date"       : proc_date,
+            "Entry Number"       : entry_no,
+            "Ref Number"         : ref_no,
+            "TP"                 : tp_code,
+            "Estimated Duty"     : duty,
+            "User Fees/Interest" : user_fees,
+            "Total Amount"       : total_amt
+        })
+
+# ---- DataFrame + Excel ----
+df = pd.DataFrame(records)
+print("\nRows captured:", len(df))
+print(df.head())
+
+outfile = os.path.join(PDF_DIR, "dst_statements.xlsx")
+df.to_excel(outfile, index=False)
+print(f"\n✓ Written to {outfile}")
